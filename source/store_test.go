@@ -52,7 +52,7 @@ func (suite *ByNamesTestSuite) TestAllInitialized() {
 	mockClientGenerator := new(MockClientGenerator)
 	mockClientGenerator.On("KubeClient").Return(fake.NewSimpleClientset(), nil)
 
-	sources, err := ByNames(mockClientGenerator, []string{"service", "fake"}, &Config{})
+	sources, err := ByNames(mockClientGenerator, []string{"service", "fake"}, &Config{}, "")
 	suite.NoError(err, "should not generate errors")
 	suite.Len(sources, 2, "should generate all two sources")
 }
@@ -61,7 +61,7 @@ func (suite *ByNamesTestSuite) TestOnlyFake() {
 	mockClientGenerator := new(MockClientGenerator)
 	mockClientGenerator.On("KubeClient").Return(fake.NewSimpleClientset(), nil)
 
-	sources, err := ByNames(mockClientGenerator, []string{"fake"}, &Config{})
+	sources, err := ByNames(mockClientGenerator, []string{"fake"}, &Config{}, "")
 	suite.NoError(err, "should not generate errors")
 	suite.Len(sources, 1, "should generate all three sources")
 	suite.Nil(mockClientGenerator.client, "client should not be created")
@@ -71,7 +71,7 @@ func (suite *ByNamesTestSuite) TestSourceNotFound() {
 	mockClientGenerator := new(MockClientGenerator)
 	mockClientGenerator.On("KubeClient").Return(fake.NewSimpleClientset(), nil)
 
-	sources, err := ByNames(mockClientGenerator, []string{"foo"}, &Config{})
+	sources, err := ByNames(mockClientGenerator, []string{"foo"}, &Config{}, "")
 	suite.Equal(err, ErrSourceNotFound, "should return sourcen not found")
 	suite.Len(sources, 0, "should not returns any source")
 }
@@ -80,7 +80,7 @@ func (suite *ByNamesTestSuite) TestKubeClientFails() {
 	mockClientGenerator := new(MockClientGenerator)
 	mockClientGenerator.On("KubeClient").Return(nil, errors.New("foo"))
 
-	_, err := ByNames(mockClientGenerator, []string{"service"}, &Config{})
+	_, err := ByNames(mockClientGenerator, []string{"service"}, &Config{}, "")
 	suite.Error(err, "should return an error if client cannot be created")
 }
 

@@ -21,13 +21,18 @@ package controller
 
 import (
 	"errors"
+	"github.com/openfresh/external-ips/firewall/inbound"
 	"testing"
 
 	"github.com/openfresh/external-ips/dns/endpoint"
 	"github.com/openfresh/external-ips/dns/plan"
 	"github.com/openfresh/external-ips/dns/provider"
 	"github.com/openfresh/external-ips/dns/registry"
+	fwplan "github.com/openfresh/external-ips/firewall/plan"
+	fwprovider "github.com/openfresh/external-ips/firewall/provider"
+	fwregistry "github.com/openfresh/external-ips/firewall/registry"
 	"github.com/openfresh/external-ips/internal/testutils"
+	"github.com/openfresh/external-ips/setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,18 +92,112 @@ func newMockProvider(endpoints []*endpoint.Endpoint, changes *plan.Changes) prov
 	return dnsProvider
 }
 
+// mockProvider returns mock endpoints and validates changes.
+type mockFWProvider struct {
+	RulesStore    []*inbound.InboundRules
+	ExpectChanges *fwplan.Changes
+}
+
+// Records returns the desired mock endpoints.
+func (p *mockFWProvider) Rules() ([]*inbound.InboundRules, error) {
+	return p.RulesStore, nil
+}
+
+// ApplyChanges validates that the passed in changes satisfy the assumtions.
+func (p *mockFWProvider) ApplyChanges(changes *fwplan.Changes) error {
+	if len(changes.Create) != len(p.ExpectChanges.Create) {
+		return errors.New("number of created rule is wrong")
+	}
+
+	for i := range changes.Create {
+		if changes.Create[i].Name != p.ExpectChanges.Create[i].Name ||
+			!changes.Create[i].Same(p.ExpectChanges.Create[i]) ||
+			!changes.Create[i].ProviderIDs.Same(p.ExpectChanges.Create[i].ProviderIDs) {
+			return errors.New("created rule is wrong")
+		}
+	}
+
+	for i := range changes.UpdateNew {
+		if changes.UpdateNew[i].Name != p.ExpectChanges.UpdateNew[i].Name ||
+			!changes.UpdateNew[i].Same(p.ExpectChanges.UpdateNew[i]) ||
+			!changes.UpdateNew[i].ProviderIDs.Same(p.ExpectChanges.UpdateNew[i].ProviderIDs) {
+			return errors.New("update new rule is wrong")
+		}
+	}
+
+	for i := range changes.UpdateOld {
+		if changes.UpdateOld[i].Name != p.ExpectChanges.UpdateOld[i].Name ||
+			!changes.UpdateOld[i].Same(p.ExpectChanges.UpdateOld[i]) ||
+			!changes.UpdateOld[i].ProviderIDs.Same(p.ExpectChanges.UpdateOld[i].ProviderIDs) {
+			return errors.New("update old rule is wrong")
+		}
+	}
+
+	for i := range changes.Delete {
+		if changes.Delete[i].Name != p.ExpectChanges.Delete[i].Name ||
+			!changes.Delete[i].Same(p.ExpectChanges.Delete[i]) ||
+			!changes.Delete[i].ProviderIDs.Same(p.ExpectChanges.Delete[i].ProviderIDs) {
+			return errors.New("delete rule is wrong")
+		}
+	}
+
+	for i := range changes.Set {
+		if changes.Set[i].ProviderID != p.ExpectChanges.Set[i].ProviderID ||
+			changes.Set[i].RulesName != p.ExpectChanges.Set[i].RulesName {
+			return errors.New("set rule is wrong")
+		}
+	}
+
+	for i := range changes.Unset {
+		if changes.Unset[i].ProviderID != p.ExpectChanges.Unset[i].ProviderID ||
+			changes.Unset[i].RulesName != p.ExpectChanges.Unset[i].RulesName {
+			return errors.New("unset rule is wrong")
+		}
+	}
+
+	return nil
+}
+
+// newMockProvider creates a new mockProvider returning the given endpoints and validating the desired changes.
+func newMockFWProvider(rules []*inbound.InboundRules, changes *fwplan.Changes) fwprovider.Provider {
+	fwProvider := &mockFWProvider{
+		RulesStore:    rules,
+		ExpectChanges: changes,
+	}
+
+	return fwProvider
+}
+
 // TestRunOnce tests that RunOnce correctly orchestrates the different components.
 func TestRunOnce(t *testing.T) {
 	// Fake some desired endpoints coming from our source.
 	source := new(testutils.MockSource)
-	source.On("Endpoints").Return([]*endpoint.Endpoint{
-		{
-			DNSName: "create-record",
-			Targets: endpoint.Targets{"1.2.3.4"},
+	source.On("ExternalIPSetting").Return(&setting.ExternalIPSetting{
+		Endpoints: []*endpoint.Endpoint{
+			{
+				DNSName: "create-record",
+				Targets: endpoint.Targets{"1.2.3.4"},
+			},
+			{
+				DNSName: "update-record",
+				Targets: endpoint.Targets{"8.8.4.4"},
+			},
 		},
-		{
-			DNSName: "update-record",
-			Targets: endpoint.Targets{"8.8.4.4"},
+		InboundRules: []*inbound.InboundRules{
+			{
+				Name: "create-rule",
+				Rules: []inbound.InboundRule{
+					{Protocol: "udp", Port: 9900},
+				},
+				ProviderIDs: inbound.ProviderIDs{"bbc", "zyx"},
+			},
+			{
+				Name: "update-rule",
+				Rules: []inbound.InboundRule{
+					{Protocol: "udp", Port: 9800},
+				},
+				ProviderIDs: inbound.ProviderIDs{"abc", "zyx"},
+			},
 		},
 	}, nil)
 
@@ -130,14 +229,83 @@ func TestRunOnce(t *testing.T) {
 		},
 	)
 
+	fwprovider := newMockFWProvider(
+		[]*inbound.InboundRules{
+			{
+				Name: "update-rule",
+				Rules: []inbound.InboundRule{
+					{Protocol: "udp", Port: 5000},
+				},
+				ProviderIDs: inbound.ProviderIDs{"abc", "zyx"},
+			},
+			{
+				Name: "delete-rule",
+				Rules: []inbound.InboundRule{
+					{Protocol: "tcp", Port: 80},
+				},
+				ProviderIDs: inbound.ProviderIDs{"def", "opq"},
+			},
+		},
+		&fwplan.Changes{
+			Create: []*inbound.InboundRules{
+				{
+					Name: "create-rule",
+					Rules: []inbound.InboundRule{
+						{Protocol: "udp", Port: 9900},
+					},
+					ProviderIDs: inbound.ProviderIDs{"bbc", "zyx"},
+				},
+			},
+			UpdateNew: []*inbound.InboundRules{
+				{
+					Name: "update-rule",
+					Rules: []inbound.InboundRule{
+						{Protocol: "udp", Port: 9800},
+					},
+					ProviderIDs: inbound.ProviderIDs{"abc", "zyx"},
+				},
+			},
+			UpdateOld: []*inbound.InboundRules{
+				{
+					Name: "update-rule",
+					Rules: []inbound.InboundRule{
+						{Protocol: "udp", Port: 5000},
+					},
+					ProviderIDs: inbound.ProviderIDs{"abc", "zyx"},
+				},
+			},
+			Delete: []*inbound.InboundRules{
+				{
+					Name: "delete-rule",
+					Rules: []inbound.InboundRule{
+						{Protocol: "tcp", Port: 80},
+					},
+					ProviderIDs: inbound.ProviderIDs{"def", "opq"},
+				},
+			},
+			Set: []*fwplan.InstanceRule{
+				{ProviderID: "bbc", RulesName: "create-rule"},
+				{ProviderID: "zyx", RulesName: "create-rule"},
+			},
+			Unset: []*fwplan.InstanceRule{
+				{ProviderID: "def", RulesName: "delete-rule"},
+				{ProviderID: "opq", RulesName: "delete-rule"},
+			},
+		},
+	)
+
 	r, err := registry.NewNoopRegistry(provider)
+	require.NoError(t, err)
+
+	fwr, err := fwregistry.NewRegistry(fwprovider)
 	require.NoError(t, err)
 
 	// Run our controller once to trigger the validation.
 	ctrl := &Controller{
-		Source:   source,
-		Registry: r,
-		Policy:   &plan.SyncPolicy{},
+		Source:     source,
+		Registry:   r,
+		FwRegistry: fwr,
+		Policy:     &plan.SyncPolicy{},
 	}
 
 	assert.NoError(t, ctrl.RunOnce())

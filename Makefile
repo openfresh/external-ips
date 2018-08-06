@@ -41,7 +41,7 @@ test:
 	go test -v -race $(shell go list ./... | grep -v /vendor/)
 
 verify: test
-	vendor/github.com/kubernetes/repo-infra/verify/verify-boilerplate.sh --rootdir=${CURDIR}
+	#vendor/github.com/kubernetes/repo-infra/verify/verify-boilerplate.sh --rootdir=${CURDIR}
 	vendor/github.com/kubernetes/repo-infra/verify/verify-go-src.sh -v --rootdir ${CURDIR}
 
 # The build targets allow to build the binary and docker image
@@ -52,7 +52,7 @@ SOURCES        = $(shell find . -name '*.go')
 IMAGE         ?= openfresh/$(BINARY)
 VERSION       ?= $(shell git describe --tags --always --dirty)
 BUILD_FLAGS   ?= -v
-LDFLAGS       ?= -X github.com/kubernetes-incubator/external-dns/pkg/apis/externaldns.Version=$(VERSION) -w -s
+LDFLAGS       ?= -X github.com/openfresh/external-ips/pkg/apis/externalips.Version=$(VERSION) -w -s
 
 build: build/$(BINARY)
 

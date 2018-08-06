@@ -20,7 +20,6 @@ limitations under the License.
 package source
 
 import (
-	"net"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +27,8 @@ import (
 	"k8s.io/client-go/pkg/api/v1"
 
 	"github.com/openfresh/external-ips/dns/endpoint"
+	"github.com/openfresh/external-ips/firewall/inbound"
+	"github.com/openfresh/external-ips/setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +47,7 @@ func (suite *ServiceSuite) SetupTest() {
 
 	suite.sc, err = NewServiceSource(
 		fakeClient,
+		"",
 		"",
 		"",
 		"{{.Name}}",
@@ -85,6 +87,19 @@ func (suite *ServiceSuite) TestResourceLabelIsSet() {
 	for _, ep := range extipsetting.Endpoints {
 		suite.Equal("service/default/foo-with-targets", ep.Labels[endpoint.ResourceLabelKey], "should set correct resource label")
 	}
+}
+
+type NodeInfo struct {
+	name       string
+	providerID string
+	internalIP string
+	externalIP string
+	labels     map[string]string
+}
+
+type PortInfo struct {
+	protocol string
+	port     int
 }
 
 func TestServiceSource(t *testing.T) {
@@ -131,6 +146,7 @@ func testServiceSourceNewServiceSource(t *testing.T) {
 			_, err := NewServiceSource(
 				fake.NewSimpleClientset(),
 				"",
+				"",
 				ti.annotationFilter,
 				ti.fqdnTemplate,
 				false,
@@ -152,6 +168,7 @@ func testServiceSourceNewServiceSource(t *testing.T) {
 func testServiceSourceEndpoints(t *testing.T) {
 	for _, tc := range []struct {
 		title                    string
+		clusterName              string
 		targetNamespace          string
 		annotationFilter         string
 		svcNamespace             string
@@ -163,50 +180,35 @@ func testServiceSourceEndpoints(t *testing.T) {
 		labels                   map[string]string
 		annotations              map[string]string
 		clusterIP                string
-		lbs                      []string
-		expected                 []*endpoint.Endpoint
+		ports                    []PortInfo
+		nodes                    []NodeInfo
+		expectedIPs              []string
+		expected                 setting.ExternalIPSetting
 		expectError              bool
 	}{
 		{
-			"no annotated services return no endpoints",
+			"no annotated services return no setting",
 			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"annotated services return an endpoint with target IP",
 			"",
 			"",
 			"testing",
 			"foo",
-			v1.ServiceTypeLoadBalancer,
+			v1.ServiceTypeClusterIP,
 			"",
 			"",
 			false,
 			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
+			map[string]string{},
 			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
+			[]PortInfo{},
+			[]NodeInfo{},
+			[]string{},
+			setting.ExternalIPSetting{},
 			false,
 		},
 		{
-			"annotated ClusterIp aren't processed without explicit authorization",
+			"annotated services return an setting with external IP",
+			"cl.kube.io",
 			"",
 			"",
 			"testing",
@@ -219,617 +221,173 @@ func testServiceSourceEndpoints(t *testing.T) {
 			map[string]string{
 				hostnameAnnotationKey: "foo.example.org.",
 			},
-			"1.2.3.4",
-			[]string{},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"FQDN template with multiple hostnames return an endpoint with target IP",
 			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Name}}.fqdn.org,{{.Name}}.fqdn.com",
-			false,
-			map[string]string{},
-			map[string]string{},
-			"",
+			[]PortInfo{
+				{protocol: "udp", port: 5000},
+			},
+			[]NodeInfo{
+				{
+					name:       "node1",
+					providerID: "abc",
+					internalIP: "1.2.3.4",
+					externalIP: "10.9.8.7",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+			},
 			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.fqdn.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.fqdn.com", Targets: endpoint.Targets{"1.2.3.4"}},
+			setting.ExternalIPSetting{
+				Endpoints: []*endpoint.Endpoint{
+					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.7"}},
+				},
+				InboundRules: []*inbound.InboundRules{
+					{
+						Name: "foo.testing.cl.kube.io",
+						Rules: []inbound.InboundRule{
+							{Protocol: "udp", Port: 5000},
+						},
+						ProviderIDs: inbound.ProviderIDs{"abc"},
+					},
+				},
 			},
 			false,
 		},
 		{
-			"FQDN template and annotation both with multiple hostnames return an endpoint with target IP",
+			"annotated services return an setting with 2 external IPs",
+			"cl.kube.io",
 			"",
 			"",
 			"testing",
 			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Name}}.fqdn.org,{{.Name}}.fqdn.com",
-			true,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org., bar.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "bar.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.fqdn.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.fqdn.com", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"annotated services with multiple hostnames return an endpoint with target IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org., bar.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "bar.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"annotated services with multiple hostnames and without trailing period return an endpoint with target IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org, bar.example.org",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "bar.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"annotated services return an endpoint with target hostname",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
+			v1.ServiceTypeClusterIP,
 			"",
 			"",
 			false,
 			map[string]string{},
 			map[string]string{
 				hostnameAnnotationKey: "foo.example.org.",
+				selectorAnnotationKey: "kops.k8s.io/instancegroup=general",
+				maxipsAnnotationKey:   "2",
 			},
 			"",
-			[]string{"lb.example.com"}, // Kubernetes omits the trailing dot
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"lb.example.com"}},
+			[]PortInfo{
+				{protocol: "udp", port: 5000},
+				{protocol: "tcp", port: 80},
+				{protocol: "tcp", port: 443},
+			},
+			[]NodeInfo{
+				{
+					name:       "node1",
+					providerID: "abc",
+					internalIP: "1.2.3.4",
+					externalIP: "10.9.8.7",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+				{
+					name:       "node2",
+					providerID: "def",
+					internalIP: "1.2.3.5",
+					externalIP: "10.9.8.6",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+				{
+					name:       "node3",
+					providerID: "ghi",
+					internalIP: "1.2.3.6",
+					externalIP: "10.9.8.5",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+			},
+			[]string{"1.2.3.4", "1.2.3.5"},
+			setting.ExternalIPSetting{
+				Endpoints: []*endpoint.Endpoint{
+					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.7", "10.9.8.6"}},
+				},
+				InboundRules: []*inbound.InboundRules{
+					{
+						Name: "foo.testing.cl.kube.io",
+						Rules: []inbound.InboundRule{
+							{Protocol: "udp", Port: 5000},
+							{Protocol: "tcp", Port: 80},
+							{Protocol: "tcp", Port: 443},
+						},
+						ProviderIDs: inbound.ProviderIDs{"abc", "def"},
+					},
+				},
 			},
 			false,
 		},
 		{
-			"annotated services can omit trailing dot",
+			"annotated services return an setting with 1 external IP",
+			"cl.kube.io",
 			"",
 			"",
 			"testing",
 			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org", // Trailing dot is omitted
-			},
-			"",
-			[]string{"1.2.3.4", "lb.example.com"}, // Kubernetes omits the trailing dot
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"lb.example.com"}},
-			},
-			false,
-		},
-		{
-			"our controller type is dns-controller",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				controllerAnnotationKey: controllerAnnotationValue,
-				hostnameAnnotationKey:   "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"different controller types are ignored even (with template specified)",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Name}}.ext-dns.test.com",
-			false,
-			map[string]string{},
-			map[string]string{
-				controllerAnnotationKey: "some-other-tool",
-				hostnameAnnotationKey:   "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"services are found in target namespace",
-			"testing",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
+			v1.ServiceTypeClusterIP,
 			"",
 			"",
 			false,
 			map[string]string{},
 			map[string]string{
 				hostnameAnnotationKey: "foo.example.org.",
+				selectorAnnotationKey: "kops.k8s.io/instancegroup=special",
+				maxipsAnnotationKey:   "2",
 			},
 			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
+			[]PortInfo{
+				{protocol: "udp", port: 5000},
 			},
-			false,
-		},
-		{
-			"services that are not in target namespace are ignored",
-			"testing",
-			"",
-			"other-testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
+			[]NodeInfo{
+				{
+					name:       "node1",
+					providerID: "abc",
+					internalIP: "1.2.3.4",
+					externalIP: "10.9.8.7",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+				{
+					name:       "node2",
+					providerID: "def",
+					internalIP: "1.2.3.5",
+					externalIP: "10.9.8.6",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "general",
+					},
+				},
+				{
+					name:       "node3",
+					providerID: "ghi",
+					internalIP: "1.2.3.6",
+					externalIP: "10.9.8.5",
+					labels: map[string]string{
+						"kops.k8s.io/instancegroup": "special",
+					},
+				},
 			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"services are found in all namespaces",
-			"",
-			"",
-			"other-testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"valid matching annotation filter expression",
-			"",
-			"service.beta.kubernetes.io/external-traffic in (Global, OnlyLocal)",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey:                         "foo.example.org.",
-				"service.beta.kubernetes.io/external-traffic": "OnlyLocal",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"valid non-matching annotation filter expression",
-			"",
-			"service.beta.kubernetes.io/external-traffic in (Global, OnlyLocal)",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey:                         "foo.example.org.",
-				"service.beta.kubernetes.io/external-traffic": "SomethingElse",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"invalid annotation filter expression",
-			"",
-			"service.beta.kubernetes.io/external-traffic in (Global OnlyLocal)",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey:                         "foo.example.org.",
-				"service.beta.kubernetes.io/external-traffic": "OnlyLocal",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			true,
-		},
-		{
-			"valid matching annotation filter label",
-			"",
-			"service.beta.kubernetes.io/external-traffic=Global",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey:                         "foo.example.org.",
-				"service.beta.kubernetes.io/external-traffic": "Global",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"valid non-matching annotation filter label",
-			"",
-			"service.beta.kubernetes.io/external-traffic=Global",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey:                         "foo.example.org.",
-				"service.beta.kubernetes.io/external-traffic": "OnlyLocal",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"no external entrypoints return no endpoints",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"",
-			[]string{},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"multiple external entrypoints return a single endpoint with multiple targets",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4", "8.8.8.8"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4", "8.8.8.8"}},
-			},
-			false,
-		},
-		{
-			"services annotated with legacy mate annotations are ignored in default mode",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				"zalando.org/dnsname": "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-		{
-			"services annotated with legacy mate annotations return an endpoint in compatibility mode",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"mate",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				"zalando.org/dnsname": "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"services annotated with legacy molecule annotations return an endpoint in compatibility mode",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"molecule",
-			"",
-			false,
-			map[string]string{
-				"dns": "route53",
-			},
-			map[string]string{
-				"domainName": "foo.example.org., bar.example.org",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "bar.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"not annotated services with set fqdnTemplate return an endpoint with target IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Name}}.bar.example.com",
-			false,
-			map[string]string{},
-			map[string]string{},
-			"",
-			[]string{"1.2.3.4", "elb.com"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.bar.example.com", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.bar.example.com", Targets: endpoint.Targets{"elb.com"}},
-			},
-			false,
-		},
-		{
-			"annotated services with set fqdnTemplate annotation takes precedence",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Name}}.bar.example.com",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4", "elb.com"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"elb.com"}},
-			},
-			false,
-		},
-		{
-			"compatibility annotated services with tmpl. compatibility takes precedence",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"mate",
-			"{{.Name}}.bar.example.com",
-			false,
-			map[string]string{},
-			map[string]string{
-				"zalando.org/dnsname": "mate.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "mate.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"not annotated services with unknown tmpl field should not return anything",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"{{.Calibre}}.bar.example.com",
-			false,
-			map[string]string{},
-			map[string]string{},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{},
-			true,
-		},
-		{
-			"ttl not annotated should have RecordTTL.IsConfigured set to false",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: endpoint.TTL(0)},
-			},
-			false,
-		},
-		{
-			"ttl annotated but invalid should have RecordTTL.IsConfigured set to false",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-				ttlAnnotationKey:      "foo",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: endpoint.TTL(0)},
-			},
-			false,
-		},
-		{
-			"ttl annotated and is valid should set Record.TTL",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-				ttlAnnotationKey:      "10",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: endpoint.TTL(10)},
-			},
-			false,
-		},
-		{
-			"Negative ttl is not valid",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeLoadBalancer,
-			"",
-			"",
-			false,
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-				ttlAnnotationKey:      "-10",
-			},
-			"",
-			[]string{"1.2.3.4"},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: endpoint.TTL(0)},
+			[]string{"1.2.3.6"},
+			setting.ExternalIPSetting{
+				Endpoints: []*endpoint.Endpoint{
+					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.5"}},
+				},
+				InboundRules: []*inbound.InboundRules{
+					{
+						Name: "foo.testing.cl.kube.io",
+						Rules: []inbound.InboundRule{
+							{Protocol: "udp", Port: 5000},
+						},
+						ProviderIDs: inbound.ProviderIDs{"ghi"},
+					},
+				},
 			},
 			false,
 		},
@@ -838,31 +396,25 @@ func testServiceSourceEndpoints(t *testing.T) {
 			// Create a Kubernetes testing client
 			kubernetes := fake.NewSimpleClientset()
 
-			// Create a service to test against
-			ingresses := []v1.LoadBalancerIngress{}
-			for _, lb := range tc.lbs {
-				if net.ParseIP(lb) != nil {
-					ingresses = append(ingresses, v1.LoadBalancerIngress{IP: lb})
-				} else {
-					ingresses = append(ingresses, v1.LoadBalancerIngress{Hostname: lb})
-				}
+			ports := []v1.ServicePort{}
+			for _, port := range tc.ports {
+				ports = append(ports, v1.ServicePort{
+					Protocol: v1.Protocol(port.protocol),
+					Port:     int32(port.port),
+				})
 			}
 
 			service := &v1.Service{
 				Spec: v1.ServiceSpec{
 					Type:      tc.svcType,
 					ClusterIP: tc.clusterIP,
+					Ports:     ports,
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace:   tc.svcNamespace,
 					Name:        tc.svcName,
 					Labels:      tc.labels,
 					Annotations: tc.annotations,
-				},
-				Status: v1.ServiceStatus{
-					LoadBalancer: v1.LoadBalancerStatus{
-						Ingress: ingresses,
-					},
 				},
 			}
 
@@ -872,6 +424,7 @@ func testServiceSourceEndpoints(t *testing.T) {
 			// Create our object under test and get the endpoints.
 			client, _ := NewServiceSource(
 				kubernetes,
+				tc.clusterName,
 				tc.targetNamespace,
 				tc.annotationFilter,
 				tc.fqdnTemplate,
@@ -882,539 +435,25 @@ func testServiceSourceEndpoints(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			extipsetting, err := client.ExternalIPSetting()
-			if tc.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-			var endpoints []*endpoint.Endpoint
-			if extipsetting != nil {
-				endpoints = extipsetting.Endpoints
-			}
-
-			// Validate returned endpoints against desired endpoints.
-			validateEndpoints(t, endpoints, tc.expected)
-		})
-	}
-}
-
-// testServiceSourceEndpoints tests that various services generate the correct endpoints.
-func TestClusterIpServices(t *testing.T) {
-	for _, tc := range []struct {
-		title            string
-		targetNamespace  string
-		annotationFilter string
-		svcNamespace     string
-		svcName          string
-		svcType          v1.ServiceType
-		compatibility    string
-		fqdnTemplate     string
-		labels           map[string]string
-		annotations      map[string]string
-		clusterIP        string
-		lbs              []string
-		expected         []*endpoint.Endpoint
-		expectError      bool
-	}{
-		{
-			"annotated ClusterIp services return an endpoint with Cluster IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			"1.2.3.4",
-			[]string{},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"1.2.3.4"}},
-			},
-			false,
-		},
-		{
-			"non-annotated ClusterIp services with set fqdnTemplate return an endpoint with target IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"{{.Name}}.bar.example.com",
-			map[string]string{},
-			map[string]string{},
-			"4.5.6.7",
-			[]string{},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo.bar.example.com", Targets: endpoint.Targets{"4.5.6.7"}},
-			},
-			false,
-		},
-		{
-			"Headless services do not generate endpoints",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{},
-			map[string]string{},
-			v1.ClusterIPNone,
-			[]string{},
-			[]*endpoint.Endpoint{},
-			false,
-		},
-	} {
-		t.Run(tc.title, func(t *testing.T) {
-			// Create a Kubernetes testing client
-			kubernetes := fake.NewSimpleClientset()
-
-			// Create a service to test against
-			ingresses := []v1.LoadBalancerIngress{}
-			for _, lb := range tc.lbs {
-				if net.ParseIP(lb) != nil {
-					ingresses = append(ingresses, v1.LoadBalancerIngress{IP: lb})
-				} else {
-					ingresses = append(ingresses, v1.LoadBalancerIngress{Hostname: lb})
-				}
-			}
-
-			service := &v1.Service{
-				Spec: v1.ServiceSpec{
-					Type:      tc.svcType,
-					ClusterIP: tc.clusterIP,
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   tc.svcNamespace,
-					Name:        tc.svcName,
-					Labels:      tc.labels,
-					Annotations: tc.annotations,
-				},
-				Status: v1.ServiceStatus{
-					LoadBalancer: v1.LoadBalancerStatus{
-						Ingress: ingresses,
+			for _, nodeInfo := range tc.nodes {
+				node := &v1.Node{
+					Spec: v1.NodeSpec{
+						ProviderID: nodeInfo.providerID,
 					},
-				},
-			}
-
-			_, err := kubernetes.CoreV1().Services(service.Namespace).Create(service)
-			require.NoError(t, err)
-
-			// Create our object under test and get the endpoints.
-			client, _ := NewServiceSource(
-				kubernetes,
-				tc.targetNamespace,
-				tc.annotationFilter,
-				tc.fqdnTemplate,
-				false,
-				tc.compatibility,
-				true,
-				false,
-			)
-			require.NoError(t, err)
-
-			extipsetting, err := client.ExternalIPSetting()
-			if tc.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-
-			// Validate returned endpoints against desired endpoints.
-			validateEndpoints(t, extipsetting.Endpoints, tc.expected)
-		})
-	}
-}
-
-// testNodePortServices tests that various services generate the correct endpoints.
-func TestNodePortServices(t *testing.T) {
-	for _, tc := range []struct {
-		title            string
-		targetNamespace  string
-		annotationFilter string
-		svcNamespace     string
-		svcName          string
-		svcType          v1.ServiceType
-		compatibility    string
-		fqdnTemplate     string
-		labels           map[string]string
-		annotations      map[string]string
-		lbs              []string
-		expected         []*endpoint.Endpoint
-		expectError      bool
-		nodes            []*v1.Node
-	}{
-		{
-			"annotated NodePort services return an endpoint with IP addresses of the cluster's nodes",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeNodePort,
-			"",
-			"",
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			nil,
-			[]*endpoint.Endpoint{
-				{DNSName: "_30192._tcp.foo.example.org", Targets: endpoint.Targets{"0 50 30192 foo.example.org"}, RecordType: endpoint.RecordTypeSRV},
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"54.10.11.1", "54.10.11.2"}, RecordType: endpoint.RecordTypeA},
-			},
-			false,
-			[]*v1.Node{{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node1",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeExternalIP, Address: "54.10.11.1"},
-						{Type: v1.NodeInternalIP, Address: "10.0.1.1"},
-					},
-				},
-			}, {
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node2",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeExternalIP, Address: "54.10.11.2"},
-						{Type: v1.NodeInternalIP, Address: "10.0.1.2"},
-					},
-				},
-			}},
-		},
-		{
-			"non-annotated NodePort services with set fqdnTemplate return an endpoint with target IP",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeNodePort,
-			"",
-			"{{.Name}}.bar.example.com",
-			map[string]string{},
-			map[string]string{},
-			nil,
-			[]*endpoint.Endpoint{
-				{DNSName: "_30192._tcp.foo.bar.example.com", Targets: endpoint.Targets{"0 50 30192 foo.bar.example.com"}, RecordType: endpoint.RecordTypeSRV},
-				{DNSName: "foo.bar.example.com", Targets: endpoint.Targets{"54.10.11.1", "54.10.11.2"}, RecordType: endpoint.RecordTypeA},
-			},
-			false,
-			[]*v1.Node{{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node1",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeExternalIP, Address: "54.10.11.1"},
-						{Type: v1.NodeInternalIP, Address: "10.0.1.1"},
-					},
-				},
-			}, {
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node2",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeExternalIP, Address: "54.10.11.2"},
-						{Type: v1.NodeInternalIP, Address: "10.0.1.2"},
-					},
-				},
-			}},
-		},
-		{
-			"annotated NodePort services return an endpoint with IP addresses of the private cluster's nodes",
-			"",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeNodePort,
-			"",
-			"",
-			map[string]string{},
-			map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-			nil,
-			[]*endpoint.Endpoint{
-				{DNSName: "_30192._tcp.foo.example.org", Targets: endpoint.Targets{"0 50 30192 foo.example.org"}, RecordType: endpoint.RecordTypeSRV},
-				{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.0.1.1", "10.0.1.2"}, RecordType: endpoint.RecordTypeA},
-			},
-			false,
-			[]*v1.Node{{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node1",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeInternalIP, Address: "10.0.1.1"},
-					},
-				},
-			}, {
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "node2",
-				},
-				Status: v1.NodeStatus{
-					Addresses: []v1.NodeAddress{
-						{Type: v1.NodeInternalIP, Address: "10.0.1.2"},
-					},
-				},
-			}},
-		},
-	} {
-		t.Run(tc.title, func(t *testing.T) {
-			// Create a Kubernetes testing client
-			kubernetes := fake.NewSimpleClientset()
-
-			// Create the nodes
-			for _, node := range tc.nodes {
-				if _, err := kubernetes.Core().Nodes().Create(node); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			// Create a service to test against
-			service := &v1.Service{
-				Spec: v1.ServiceSpec{
-					Type: tc.svcType,
-					Ports: []v1.ServicePort{
-						{
-							NodePort: 30192,
+					Status: v1.NodeStatus{
+						Addresses: []v1.NodeAddress{
+							{Type: v1.NodeExternalIP, Address: nodeInfo.externalIP},
+							{Type: v1.NodeInternalIP, Address: nodeInfo.internalIP},
 						},
 					},
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   tc.svcNamespace,
-					Name:        tc.svcName,
-					Labels:      tc.labels,
-					Annotations: tc.annotations,
-				},
-			}
-
-			_, err := kubernetes.CoreV1().Services(service.Namespace).Create(service)
-			require.NoError(t, err)
-
-			// Create our object under test and get the endpoints.
-			client, _ := NewServiceSource(
-				kubernetes,
-				tc.targetNamespace,
-				tc.annotationFilter,
-				tc.fqdnTemplate,
-				false,
-				tc.compatibility,
-				true,
-				false,
-			)
-			require.NoError(t, err)
-
-			extipsetting, err := client.ExternalIPSetting()
-			if tc.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-
-			// Validate returned endpoints against desired endpoints.
-			validateEndpoints(t, extipsetting.Endpoints, tc.expected)
-		})
-	}
-}
-
-// TestHeadlessServices tests that headless services generate the correct endpoints.
-func TestHeadlessServices(t *testing.T) {
-	for _, tc := range []struct {
-		title           string
-		targetNamespace string
-		svcNamespace    string
-		svcName         string
-		svcType         v1.ServiceType
-		compatibility   string
-		fqdnTemplate    string
-		labels          map[string]string
-		annotations     map[string]string
-		clusterIP       string
-		podIP           string
-		selector        map[string]string
-		lbs             []string
-		podnames        []string
-		hostnames       []string
-		phases          []v1.PodPhase
-		expected        []*endpoint.Endpoint
-		expectError     bool
-	}{
-		{
-			"annotated Headless services return endpoints for each selected Pod",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{"component": "foo"},
-			map[string]string{
-				hostnameAnnotationKey: "service.example.org",
-			},
-			v1.ClusterIPNone,
-			"1.1.1.1",
-			map[string]string{
-				"component": "foo",
-			},
-			[]string{},
-			[]string{"foo-0", "foo-1"},
-			[]string{"foo-0", "foo-1"},
-			[]v1.PodPhase{v1.PodRunning, v1.PodRunning},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo-0.service.example.org", Targets: endpoint.Targets{"1.1.1.1"}},
-				{DNSName: "foo-1.service.example.org", Targets: endpoint.Targets{"1.1.1.1"}},
-			},
-			false,
-		},
-		{
-			"annotated Headless services return endpoints with TTL for each selected Pod",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{"component": "foo"},
-			map[string]string{
-				hostnameAnnotationKey: "service.example.org",
-				ttlAnnotationKey:      "1",
-			},
-			v1.ClusterIPNone,
-			"1.1.1.1",
-			map[string]string{
-				"component": "foo",
-			},
-			[]string{},
-			[]string{"foo-0", "foo-1"},
-			[]string{"foo-0", "foo-1"},
-			[]v1.PodPhase{v1.PodRunning, v1.PodRunning},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo-0.service.example.org", Targets: endpoint.Targets{"1.1.1.1"}, RecordTTL: endpoint.TTL(1)},
-				{DNSName: "foo-1.service.example.org", Targets: endpoint.Targets{"1.1.1.1"}, RecordTTL: endpoint.TTL(1)},
-			},
-			false,
-		},
-		{
-			"annotated Headless services return endpoints for each selected Pod, which are in running state",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{"component": "foo"},
-			map[string]string{
-				hostnameAnnotationKey: "service.example.org",
-			},
-			v1.ClusterIPNone,
-			"1.1.1.1",
-			map[string]string{
-				"component": "foo",
-			},
-			[]string{},
-			[]string{"foo-0", "foo-1"},
-			[]string{"foo-0", "foo-1"},
-			[]v1.PodPhase{v1.PodRunning, v1.PodFailed},
-			[]*endpoint.Endpoint{
-				{DNSName: "foo-0.service.example.org", Targets: endpoint.Targets{"1.1.1.1"}},
-			},
-			false,
-		},
-		{
-			"annotated Headless services return endpoints for pods missing hostname",
-			"",
-			"testing",
-			"foo",
-			v1.ServiceTypeClusterIP,
-			"",
-			"",
-			map[string]string{"component": "foo"},
-			map[string]string{
-				hostnameAnnotationKey: "service.example.org",
-			},
-			v1.ClusterIPNone,
-			"1.1.1.1",
-			map[string]string{
-				"component": "foo",
-			},
-			[]string{},
-			[]string{"foo-0", "foo-1"},
-			[]string{"", ""},
-			[]v1.PodPhase{v1.PodRunning, v1.PodRunning},
-			[]*endpoint.Endpoint{
-				{DNSName: "service.example.org", Targets: endpoint.Targets{"1.1.1.1"}},
-				{DNSName: "service.example.org", Targets: endpoint.Targets{"1.1.1.1"}},
-			},
-			false,
-		},
-	} {
-		t.Run(tc.title, func(t *testing.T) {
-			// Create a Kubernetes testing client
-			kubernetes := fake.NewSimpleClientset()
-
-			service := &v1.Service{
-				Spec: v1.ServiceSpec{
-					Type:      tc.svcType,
-					ClusterIP: tc.clusterIP,
-					Selector:  tc.selector,
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace:   tc.svcNamespace,
-					Name:        tc.svcName,
-					Labels:      tc.labels,
-					Annotations: tc.annotations,
-				},
-				Status: v1.ServiceStatus{},
-			}
-			_, err := kubernetes.CoreV1().Services(service.Namespace).Create(service)
-			require.NoError(t, err)
-
-			for i, podname := range tc.podnames {
-				pod := &v1.Pod{
-					Spec: v1.PodSpec{
-						Containers: []v1.Container{},
-						Hostname:   tc.hostnames[i],
-					},
 					ObjectMeta: metav1.ObjectMeta{
-						Namespace:   tc.svcNamespace,
-						Name:        podname,
-						Labels:      tc.labels,
-						Annotations: tc.annotations,
-					},
-					Status: v1.PodStatus{
-						PodIP: tc.podIP,
-						Phase: tc.phases[i],
+						Name:   nodeInfo.name,
+						Labels: nodeInfo.labels,
 					},
 				}
-
-				_, err = kubernetes.CoreV1().Pods(tc.svcNamespace).Create(pod)
+				_, err := kubernetes.CoreV1().Nodes().Create(node)
 				require.NoError(t, err)
 			}
-
-			// Create our object under test and get the endpoints.
-			client, _ := NewServiceSource(
-				kubernetes,
-				tc.targetNamespace,
-				"",
-				tc.fqdnTemplate,
-				false,
-				tc.compatibility,
-				true,
-				false,
-			)
-			require.NoError(t, err)
 
 			extipsetting, err := client.ExternalIPSetting()
 			if tc.expectError {
@@ -1423,41 +462,13 @@ func TestHeadlessServices(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Validate returned endpoints against desired endpoints.
-			validateEndpoints(t, extipsetting.Endpoints, tc.expected)
+			svc, err := kubernetes.CoreV1().Services(service.Namespace).Get(tc.svcName, metav1.GetOptions{})
+			require.NoError(t, err)
+
+			validateIPs(t, svc.Spec.ExternalIPs, tc.expectedIPs)
+
+			// Validate returned setting against desired setting.
+			validateSetting(t, extipsetting, &tc.expected)
 		})
-	}
-}
-
-func BenchmarkServiceEndpoints(b *testing.B) {
-	kubernetes := fake.NewSimpleClientset()
-
-	service := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "testing",
-			Name:      "foo",
-			Annotations: map[string]string{
-				hostnameAnnotationKey: "foo.example.org.",
-			},
-		},
-		Status: v1.ServiceStatus{
-			LoadBalancer: v1.LoadBalancerStatus{
-				Ingress: []v1.LoadBalancerIngress{
-					{IP: "1.2.3.4"},
-					{IP: "8.8.8.8"},
-				},
-			},
-		},
-	}
-
-	_, err := kubernetes.CoreV1().Services(service.Namespace).Create(service)
-	require.NoError(b, err)
-
-	client, err := NewServiceSource(kubernetes, v1.NamespaceAll, "", "", false, "", false, false)
-	require.NoError(b, err)
-
-	for i := 0; i < b.N; i++ {
-		_, err := client.ExternalIPSetting()
-		require.NoError(b, err)
 	}
 }

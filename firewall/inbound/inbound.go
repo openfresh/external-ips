@@ -5,9 +5,38 @@ package inbound
 
 import (
 	"fmt"
+	"sort"
 )
 
 type ProviderIDs []string
+
+func (t ProviderIDs) Len() int {
+	return len(t)
+}
+
+func (t ProviderIDs) Less(i, j int) bool {
+	return t[i] < t[j]
+}
+
+func (t ProviderIDs) Swap(i, j int) {
+	t[i], t[j] = t[j], t[i]
+}
+
+// Same compares to Targets and returns true if they are completely identical
+func (t ProviderIDs) Same(o ProviderIDs) bool {
+	if len(t) != len(o) {
+		return false
+	}
+	sort.Stable(t)
+	sort.Stable(o)
+
+	for i, e := range t {
+		if e != o[i] {
+			return false
+		}
+	}
+	return true
+}
 
 type InboundRules struct {
 	Name        string

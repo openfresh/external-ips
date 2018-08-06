@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/openfresh/external-ips/ens/endpoint"
+	"github.com/openfresh/external-ips/dns/endpoint"
 	"github.com/stretchr/testify/assert"
 )
 

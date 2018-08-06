@@ -1,3 +1,6 @@
+// Copyright (c) 2018 CyberAgent, Inc. All rights reserved.
+// https://github.com/openfresh/external-ips
+
 /*
 Copyright 2017 The Kubernetes Authors.
 
