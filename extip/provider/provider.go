@@ -54,14 +54,14 @@ func (im *ProviderImpl) ExtIPs() ([]*extip.ExtIP, error) {
 // ApplyChanges propagates changes to the cluster
 func (im *ProviderImpl) ApplyChanges(changes *plan.Changes) error {
 	for _, e := range changes.UpdateNew {
-		svc, err := im.kubeClient.CoreV1().Services(im.namespace).Get(e.SvcName, metav1.GetOptions{})
+		svc, err := im.kubeClient.CoreV1().Services(e.Namespace).Get(e.SvcName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 		svc.Spec.ExternalIPs = e.ExtIPs
-		log.Infof("Desired change: %s %s %s", "UPDATE ExternalIPs", e.SvcName, strings.Join(e.ExtIPs, ";"))
+		log.Infof("Desired change: %s %s/%s %s", "UPDATE ExternalIPs", svc.Namespace, svc.Name, strings.Join(e.ExtIPs, ";"))
 		if !im.dryRun {
-			newsvc, err := im.kubeClient.CoreV1().Services(im.namespace).Update(svc)
+			newsvc, err := im.kubeClient.CoreV1().Services(svc.Namespace).Update(svc)
 			if err != nil {
 				return err
 			}

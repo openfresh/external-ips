@@ -181,8 +181,9 @@ func (sc *serviceSource) extractNodeInfo(svc *v1.Service, nodes []v1.Node) (endp
 
 func (sc *serviceSource) externalIPs(svc *v1.Service, externalIPs endpoint.Targets) *extip.ExtIP {
 	return &extip.ExtIP{
-		SvcName: svc.Name,
-		ExtIPs:  externalIPs,
+		Namespace: svc.Namespace,
+		SvcName:   svc.Name,
+		ExtIPs:    externalIPs,
 	}
 }
 
