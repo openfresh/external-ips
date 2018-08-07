@@ -20,6 +20,7 @@ limitations under the License.
 package source
 
 import (
+	"github.com/openfresh/external-ips/extip/extip"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -182,7 +183,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 		clusterIP                string
 		ports                    []PortInfo
 		nodes                    []NodeInfo
-		expectedIPs              []string
 		expected                 setting.ExternalIPSetting
 		expectError              bool
 	}{
@@ -202,7 +202,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 			"",
 			[]PortInfo{},
 			[]NodeInfo{},
-			[]string{},
 			setting.ExternalIPSetting{},
 			false,
 		},
@@ -236,7 +235,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 					},
 				},
 			},
-			[]string{"1.2.3.4"},
 			setting.ExternalIPSetting{
 				Endpoints: []*endpoint.Endpoint{
 					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.7"}},
@@ -249,6 +247,9 @@ func testServiceSourceEndpoints(t *testing.T) {
 						},
 						ProviderIDs: inbound.ProviderIDs{"abc"},
 					},
+				},
+				ExtIPs: []*extip.ExtIP{
+					{SvcName: "foo", ExtIPs: endpoint.Targets{"1.2.3.4"}},
 				},
 			},
 			false,
@@ -305,7 +306,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 					},
 				},
 			},
-			[]string{"1.2.3.4", "1.2.3.5"},
 			setting.ExternalIPSetting{
 				Endpoints: []*endpoint.Endpoint{
 					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.7", "10.9.8.6"}},
@@ -320,6 +320,9 @@ func testServiceSourceEndpoints(t *testing.T) {
 						},
 						ProviderIDs: inbound.ProviderIDs{"abc", "def"},
 					},
+				},
+				ExtIPs: []*extip.ExtIP{
+					{SvcName: "foo", ExtIPs: endpoint.Targets{"1.2.3.4", "1.2.3.5"}},
 				},
 			},
 			false,
@@ -374,7 +377,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 					},
 				},
 			},
-			[]string{"1.2.3.6"},
 			setting.ExternalIPSetting{
 				Endpoints: []*endpoint.Endpoint{
 					{DNSName: "foo.example.org", Targets: endpoint.Targets{"10.9.8.5"}},
@@ -387,6 +389,9 @@ func testServiceSourceEndpoints(t *testing.T) {
 						},
 						ProviderIDs: inbound.ProviderIDs{"ghi"},
 					},
+				},
+				ExtIPs: []*extip.ExtIP{
+					{SvcName: "foo", ExtIPs: endpoint.Targets{"1.2.3.6"}},
 				},
 			},
 			false,
@@ -461,11 +466,6 @@ func testServiceSourceEndpoints(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-
-			svc, err := kubernetes.CoreV1().Services(service.Namespace).Get(tc.svcName, metav1.GetOptions{})
-			require.NoError(t, err)
-
-			validateIPs(t, svc.Spec.ExternalIPs, tc.expectedIPs)
 
 			// Validate returned setting against desired setting.
 			validateSetting(t, extipsetting, &tc.expected)

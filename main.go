@@ -37,6 +37,8 @@ import (
 	"github.com/openfresh/external-ips/dns/plan"
 	"github.com/openfresh/external-ips/dns/provider"
 	"github.com/openfresh/external-ips/dns/registry"
+	eipprovider "github.com/openfresh/external-ips/extip/provider"
+	eipregistry "github.com/openfresh/external-ips/extip/registry"
 	fwprovider "github.com/openfresh/external-ips/firewall/provider"
 	fwregistry "github.com/openfresh/external-ips/firewall/registry"
 	"github.com/openfresh/external-ips/pkg/apis/externalips"
@@ -153,6 +155,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	eipp, err := eipprovider.NewProvider(kubeClient, cfg.Namespace, cfg.DryRun)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var r registry.Registry
 	switch cfg.Registry {
 	case "noop":
@@ -175,13 +182,22 @@ func main() {
 	}
 
 	fwr, err := fwregistry.NewRegistry(fwp)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	eipr, err := eipregistry.NewRegistry(eipp)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctrl := controller.Controller{
-		Source:     endpointsSource,
-		Registry:   r,
-		FwRegistry: fwr,
-		Policy:     policy,
-		Interval:   cfg.Interval,
+		Source:      endpointsSource,
+		Registry:    r,
+		FwRegistry:  fwr,
+		EipRegistry: eipr,
+		Policy:      policy,
+		Interval:    cfg.Interval,
 	}
 
 	if cfg.Once {

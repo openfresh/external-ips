@@ -26,6 +26,8 @@ import (
 
 	"github.com/openfresh/external-ips/dns/plan"
 	"github.com/openfresh/external-ips/dns/registry"
+	eipplan "github.com/openfresh/external-ips/extip/plan"
+	eipregistry "github.com/openfresh/external-ips/extip/registry"
 	fwplan "github.com/openfresh/external-ips/firewall/plan"
 	fwregistry "github.com/openfresh/external-ips/firewall/registry"
 	"github.com/openfresh/external-ips/source"
@@ -38,9 +40,10 @@ import (
 // * Take both lists and calculate a Plan to move current towards desired state.
 // * Tell the DNS provider to apply the changes calucated by the Plan.
 type Controller struct {
-	Source     source.Source
-	Registry   registry.Registry
-	FwRegistry fwregistry.Registry
+	Source      source.Source
+	Registry    registry.Registry
+	FwRegistry  *fwregistry.Registry
+	EipRegistry *eipregistry.Registry
 	// The policy that defines which changes to DNS records are allowed
 	Policy plan.Policy
 	// The interval between individual synchronizations
@@ -59,7 +62,24 @@ func (c *Controller) RunOnce() error {
 		return err
 	}
 
+	extips, err := c.EipRegistry.ExtIPs()
+	if err != nil {
+		return err
+	}
+
 	setting, err := c.Source.ExternalIPSetting()
+	if err != nil {
+		return err
+	}
+
+	eipplan := &eipplan.Plan{
+		Current: extips,
+		Desired: setting.ExtIPs,
+	}
+
+	eipplan = eipplan.Calculate()
+
+	err = c.EipRegistry.ApplyChanges(eipplan.Changes)
 	if err != nil {
 		return err
 	}

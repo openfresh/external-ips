@@ -20,10 +20,11 @@ limitations under the License.
 package source
 
 import (
-	"github.com/openfresh/external-ips/firewall/inbound"
 	"testing"
 
 	"github.com/openfresh/external-ips/dns/endpoint"
+	"github.com/openfresh/external-ips/extip/extip"
+	"github.com/openfresh/external-ips/firewall/inbound"
 	"github.com/openfresh/external-ips/setting"
 )
 
@@ -37,6 +38,7 @@ func validateIPs(t *testing.T, ips, expected endpoint.Targets) {
 func validateSetting(t *testing.T, setting, expected *setting.ExternalIPSetting) {
 	validateEndpoints(t, setting.Endpoints, expected.Endpoints)
 	validateInboundRules(t, setting.InboundRules, expected.InboundRules)
+	validateExtIPs(t, setting.ExtIPs, expected.ExtIPs)
 }
 
 func validateEndpoints(t *testing.T, endpoints, expected []*endpoint.Endpoint) {
@@ -89,5 +91,25 @@ func validateInbouldRule(t *testing.T, rule, expected *inbound.InboundRules) {
 
 	if !rule.ProviderIDs.Same(expected.ProviderIDs) {
 		t.Errorf("expected %s, got %s", expected.ProviderIDs, rule.ProviderIDs)
+	}
+}
+
+func validateExtIPs(t *testing.T, extips, expected []*extip.ExtIP) {
+	if len(extips) != len(expected) {
+		t.Fatalf("expected %d extips, got %d", len(expected), len(extips))
+	}
+
+	for i := range extips {
+		validateExtIP(t, extips[i], expected[i])
+	}
+}
+
+func validateExtIP(t *testing.T, extips, expected *extip.ExtIP) {
+	if extips.SvcName != expected.SvcName {
+		t.Errorf("expected %s, got %s", expected.SvcName, extips.SvcName)
+	}
+
+	if !extips.ExtIPs.Same(expected.ExtIPs) {
+		t.Errorf("expected %s, got %s", expected.ExtIPs, extips.ExtIPs)
 	}
 }

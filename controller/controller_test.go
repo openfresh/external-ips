@@ -21,13 +21,18 @@ package controller
 
 import (
 	"errors"
+	"github.com/openfresh/external-ips/extip/extip"
 	"github.com/openfresh/external-ips/firewall/inbound"
+	"sort"
 	"testing"
 
 	"github.com/openfresh/external-ips/dns/endpoint"
 	"github.com/openfresh/external-ips/dns/plan"
 	"github.com/openfresh/external-ips/dns/provider"
 	"github.com/openfresh/external-ips/dns/registry"
+	eipplan "github.com/openfresh/external-ips/extip/plan"
+	eipprovider "github.com/openfresh/external-ips/extip/provider"
+	eipregistry "github.com/openfresh/external-ips/extip/registry"
 	fwplan "github.com/openfresh/external-ips/firewall/plan"
 	fwprovider "github.com/openfresh/external-ips/firewall/provider"
 	fwregistry "github.com/openfresh/external-ips/firewall/registry"
@@ -141,6 +146,8 @@ func (p *mockFWProvider) ApplyChanges(changes *fwplan.Changes) error {
 		}
 	}
 
+	sort.Sort(fwplan.ByProviderID(changes.Set))
+	sort.Sort(fwplan.ByProviderID(p.ExpectChanges.Set))
 	for i := range changes.Set {
 		if changes.Set[i].ProviderID != p.ExpectChanges.Set[i].ProviderID ||
 			changes.Set[i].RulesName != p.ExpectChanges.Set[i].RulesName {
@@ -148,6 +155,8 @@ func (p *mockFWProvider) ApplyChanges(changes *fwplan.Changes) error {
 		}
 	}
 
+	sort.Sort(fwplan.ByProviderID(changes.Unset))
+	sort.Sort(fwplan.ByProviderID(p.ExpectChanges.Unset))
 	for i := range changes.Unset {
 		if changes.Unset[i].ProviderID != p.ExpectChanges.Unset[i].ProviderID ||
 			changes.Unset[i].RulesName != p.ExpectChanges.Unset[i].RulesName {
@@ -166,6 +175,50 @@ func newMockFWProvider(rules []*inbound.InboundRules, changes *fwplan.Changes) f
 	}
 
 	return fwProvider
+}
+
+// mockProvider returns mock endpoints and validates changes.
+type mockEipProvider struct {
+	ExtIPsStore   []*extip.ExtIP
+	ExpectChanges *eipplan.Changes
+}
+
+// Records returns the desired mock endpoints.
+func (p *mockEipProvider) ExtIPs() ([]*extip.ExtIP, error) {
+	return p.ExtIPsStore, nil
+}
+
+// ApplyChanges validates that the passed in changes satisfy the assumtions.
+func (p *mockEipProvider) ApplyChanges(changes *eipplan.Changes) error {
+	sort.Sort(extip.BySvcName(changes.UpdateNew))
+	sort.Sort(extip.BySvcName(p.ExpectChanges.UpdateNew))
+	for i := range changes.UpdateNew {
+		if changes.UpdateNew[i].SvcName != p.ExpectChanges.UpdateNew[i].SvcName ||
+			!changes.UpdateNew[i].ExtIPs.Same(p.ExpectChanges.UpdateNew[i].ExtIPs) {
+			return errors.New("update new eips is wrong")
+		}
+	}
+
+	sort.Sort(extip.BySvcName(changes.UpdateOld))
+	sort.Sort(extip.BySvcName(p.ExpectChanges.UpdateOld))
+	for i := range changes.UpdateOld {
+		if changes.UpdateOld[i].SvcName != p.ExpectChanges.UpdateOld[i].SvcName ||
+			!changes.UpdateOld[i].ExtIPs.Same(p.ExpectChanges.UpdateOld[i].ExtIPs) {
+			return errors.New("update old eips is wrong")
+		}
+	}
+
+	return nil
+}
+
+// newMockProvider creates a new mockProvider returning the given endpoints and validating the desired changes.
+func newMockEipProvider(extips []*extip.ExtIP, changes *eipplan.Changes) eipprovider.Provider {
+	eipProvider := &mockEipProvider{
+		ExtIPsStore:   extips,
+		ExpectChanges: changes,
+	}
+
+	return eipProvider
 }
 
 // TestRunOnce tests that RunOnce correctly orchestrates the different components.
@@ -197,6 +250,12 @@ func TestRunOnce(t *testing.T) {
 					{Protocol: "udp", Port: 9800},
 				},
 				ProviderIDs: inbound.ProviderIDs{"abc", "zyx"},
+			},
+		},
+		ExtIPs: []*extip.ExtIP{
+			{
+				SvcName: "update-svc",
+				ExtIPs:  endpoint.Targets{"3.2.5.4"},
 			},
 		},
 	}, nil)
@@ -294,18 +353,44 @@ func TestRunOnce(t *testing.T) {
 		},
 	)
 
+	eipprovider := newMockEipProvider(
+		[]*extip.ExtIP{
+			{
+				SvcName: "update-svc",
+				ExtIPs:  endpoint.Targets{"8.8.8.8"},
+			},
+			{
+				SvcName: "delete-svc",
+				ExtIPs:  endpoint.Targets{"4.3.2.1"},
+			},
+		},
+		&eipplan.Changes{
+			UpdateNew: []*extip.ExtIP{
+				{SvcName: "update-svc", ExtIPs: endpoint.Targets{"3.2.5.4"}},
+				{SvcName: "delete-svc", ExtIPs: endpoint.Targets{}},
+			},
+			UpdateOld: []*extip.ExtIP{
+				{SvcName: "update-svc", ExtIPs: endpoint.Targets{"8.8.8.8"}},
+				{SvcName: "delete-svc", ExtIPs: endpoint.Targets{"4.3.2.1"}},
+			},
+		},
+	)
+
 	r, err := registry.NewNoopRegistry(provider)
 	require.NoError(t, err)
 
 	fwr, err := fwregistry.NewRegistry(fwprovider)
 	require.NoError(t, err)
 
+	eipr, err := eipregistry.NewRegistry(eipprovider)
+
 	// Run our controller once to trigger the validation.
 	ctrl := &Controller{
-		Source:     source,
-		Registry:   r,
-		FwRegistry: fwr,
-		Policy:     &plan.SyncPolicy{},
+		Source:      source,
+		Registry:    r,
+		FwRegistry:  fwr,
+		EipRegistry: eipr,
+		Policy:      &plan.SyncPolicy{},
 	}
 
 	assert.NoError(t, ctrl.RunOnce())

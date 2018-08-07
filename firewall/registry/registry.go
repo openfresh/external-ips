@@ -9,29 +9,24 @@ import (
 	"github.com/openfresh/external-ips/firewall/provider"
 )
 
-type Registry interface {
-	Rules() ([]*inbound.InboundRules, error)
-	ApplyChanges(changes *plan.Changes) error
-}
-
 // RegistryImpl implements registry interface
-type RegistryImpl struct {
+type Registry struct {
 	provider provider.Provider
 }
 
-// NewRegistry returns new RegistryImpl object
-func NewRegistry(provider provider.Provider) (*RegistryImpl, error) {
-	return &RegistryImpl{
+// NewRegistry returns new Registry object
+func NewRegistry(provider provider.Provider) (*Registry, error) {
+	return &Registry{
 		provider: provider,
 	}, nil
 }
 
-// Records returns the current records from the dns provider
-func (im *RegistryImpl) Rules() ([]*inbound.InboundRules, error) {
+// Rules returns the current rules from the firewall provider
+func (im *Registry) Rules() ([]*inbound.InboundRules, error) {
 	return im.provider.Rules()
 }
 
-// ApplyChanges propagates changes to the dns provider
-func (im *RegistryImpl) ApplyChanges(changes *plan.Changes) error {
+// ApplyChanges propagates changes to the firewall provider
+func (im *Registry) ApplyChanges(changes *plan.Changes) error {
 	return im.provider.ApplyChanges(changes)
 }

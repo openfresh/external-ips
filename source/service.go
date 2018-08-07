@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/pkg/api/v1"
 
 	"github.com/openfresh/external-ips/dns/endpoint"
+	"github.com/openfresh/external-ips/extip/extip"
 	"github.com/openfresh/external-ips/firewall/inbound"
 	"github.com/openfresh/external-ips/setting"
 )
@@ -125,19 +126,15 @@ func (sc *serviceSource) ExternalIPSetting() (*setting.ExternalIPSetting, error)
 			return nil, err
 		}
 
-		err = sc.updateExternalIPs(&svc, internalIPs)
-		if err != nil {
-			return nil, err
-		}
-
 		svcEndpoints := sc.endpoints(&svc, externalIPs)
-
 		inboundRules := sc.inboundRules(&svc, providerIDs, sc.clusterName)
+		extIPs := sc.externalIPs(&svc, internalIPs)
 
 		log.Debugf("External IPs setting generated from service: %s/%s: %v", svc.Namespace, svc.Name, setting)
 		sc.setResourceLabel(svc, setting.Endpoints)
 		setting.Endpoints = append(setting.Endpoints, svcEndpoints...)
 		setting.InboundRules = append(setting.InboundRules, inboundRules)
+		setting.ExtIPs = append(setting.ExtIPs, extIPs)
 	}
 
 	return &setting, nil
@@ -182,19 +179,11 @@ func (sc *serviceSource) extractNodeInfo(svc *v1.Service, nodes []v1.Node) (endp
 	return externalIPs, internalIPs, providerIDs, nil
 }
 
-func (sc *serviceSource) updateExternalIPs(svc *v1.Service, internalIPs []string) error {
-	if !equalIPs(svc.Spec.ExternalIPs, internalIPs) {
-		log.Infof("Desired change: %s %s %s", "UPDATE ExternalIPs", svc.Name, strings.Join(internalIPs, ";"))
-		if !sc.dryRun {
-			svc.Spec.ExternalIPs = internalIPs
-			newsvc, err := sc.client.CoreV1().Services(svc.Namespace).Update(svc)
-			if err != nil {
-				return err
-			}
-			log.Debugf("external IPs was updated at service: %s/%s", newsvc.Namespace, newsvc.Name)
-		}
+func (sc *serviceSource) externalIPs(svc *v1.Service, externalIPs endpoint.Targets) *extip.ExtIP {
+	return &extip.ExtIP{
+		SvcName: svc.Name,
+		ExtIPs:  externalIPs,
 	}
-	return nil
 }
 
 // endpointsFromService extracts the endpoints from a service object

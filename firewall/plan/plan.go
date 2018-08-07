@@ -22,6 +22,12 @@ type InstanceRule struct {
 	RulesName  string
 }
 
+type ByProviderID []*InstanceRule
+
+func (a ByProviderID) Len() int           { return len(a) }
+func (a ByProviderID) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByProviderID) Less(i, j int) bool { return a[i].ProviderID < a[j].ProviderID }
+
 type Changes struct {
 	// Rules that need to be created
 	Create []*inbound.InboundRules
