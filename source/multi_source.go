@@ -21,6 +21,7 @@ package source
 
 import (
 	"github.com/openfresh/external-ips/dns/endpoint"
+	"github.com/openfresh/external-ips/extip/extip"
 	"github.com/openfresh/external-ips/firewall/inbound"
 	"github.com/openfresh/external-ips/setting"
 )
@@ -35,6 +36,7 @@ func (ms *multiSource) ExternalIPSetting() (*setting.ExternalIPSetting, error) {
 	result := setting.ExternalIPSetting{
 		Endpoints:    []*endpoint.Endpoint{},
 		InboundRules: []*inbound.InboundRules{},
+		ExtIPs:       []*extip.ExtIP{},
 	}
 
 	for _, s := range ms.children {
@@ -45,6 +47,7 @@ func (ms *multiSource) ExternalIPSetting() (*setting.ExternalIPSetting, error) {
 
 		result.Endpoints = append(result.Endpoints, setting.Endpoints...)
 		result.InboundRules = append(result.InboundRules, setting.InboundRules...)
+		result.ExtIPs = append(result.ExtIPs, setting.ExtIPs...)
 	}
 
 	return &result, nil

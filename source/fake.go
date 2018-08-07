@@ -25,6 +25,7 @@ package source
 
 import (
 	"fmt"
+	"github.com/openfresh/external-ips/extip/extip"
 	"math/rand"
 	"net"
 	"time"
@@ -70,6 +71,7 @@ func (sc *fakeSource) ExternalIPSetting() (*setting.ExternalIPSetting, error) {
 	}
 	result.Endpoints = endpoints
 	result.InboundRules = []*inbound.InboundRules{}
+	result.ExtIPs = []*extip.ExtIP{}
 
 	return &result, nil
 }
