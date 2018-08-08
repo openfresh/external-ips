@@ -103,6 +103,10 @@ type mockFWProvider struct {
 	ExpectChanges *fwplan.Changes
 }
 
+func (p *mockFWProvider) GetClusterName() (string, error) {
+	return "kube.openfresh.io", nil
+}
+
 // Records returns the desired mock endpoints.
 func (p *mockFWProvider) Rules() ([]*inbound.InboundRules, error) {
 	return p.RulesStore, nil

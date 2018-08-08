@@ -28,6 +28,7 @@ RUN make build
 FROM alpine:latest
 MAINTAINER openfresh @ CyberAgent <valencia_dev@cyberagent.co.jp>
 
+RUN apk add --no-cache ca-certificates
 COPY --from=builder /go/src/github.com/openfresh/external-ips/build/external-ips /bin/external-ips
 
 ENTRYPOINT ["/bin/external-ips"]

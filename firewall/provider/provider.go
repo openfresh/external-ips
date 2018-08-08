@@ -26,6 +26,7 @@ import (
 
 // Provider defines the interface DNS providers should implement.
 type Provider interface {
+	GetClusterName() (string, error)
 	Rules() ([]*inbound.InboundRules, error)
 	ApplyChanges(changes *plan.Changes) error
 }

@@ -39,11 +39,12 @@ type EC2API interface {
 
 // AWSProvider is an implementation of Provider for AWS EC2.
 type AWSProvider struct {
-	client      EC2API
-	kubeClient  kubernetes.Interface
-	vpcID       string
-	clusterName string
-	dryRun      bool
+	client                    EC2API
+	kubeClient                kubernetes.Interface
+	vpcID                     string
+	clusterName               string
+	mapInstanceIdToProviderId map[string]string
+	dryRun                    bool
 }
 
 // AWSConfig contains configuration to create a new AWS provider.
@@ -125,42 +126,20 @@ func NewAWSProvider(awsConfig AWSConfig, kubeClient kubernetes.Interface) (*AWSP
 	return provider, nil
 }
 
-func (p *AWSProvider) Rules() ([]*inbound.InboundRules, error) {
-	nodes, err := p.kubeClient.CoreV1().Nodes().List(metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	instanceIds := make([]*string, 0, len(nodes.Items))
-	mapInstanceIdToProviderId := make(map[string]string, len(nodes.Items))
-	for _, node := range nodes.Items {
-		instanceId, err := mapToAWSInstanceID(node.Spec.ProviderID)
+func (p *AWSProvider) GetClusterName() (string, error) {
+	if len(p.clusterName) == 0 {
+		_, err := p.getInstances()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-		instanceIds = append(instanceIds, aws.String(instanceId))
-		mapInstanceIdToProviderId[instanceId] = node.Spec.ProviderID
 	}
+	return p.clusterName, nil
+}
 
-	request := &ec2.DescribeInstancesInput{
-		InstanceIds: instanceIds,
-	}
-	instances, err := p.DescribeInstances(request)
+func (p *AWSProvider) Rules() ([]*inbound.InboundRules, error) {
+	instances, err := p.getInstances()
 	if err != nil {
 		return nil, err
-	}
-
-	if len(instances) > 0 {
-		instance := instances[0]
-		for _, tag := range instance.Tags {
-			if aws.StringValue(tag.Key) == "KubernetesCluster" {
-				p.clusterName = aws.StringValue(tag.Value)
-				break
-			}
-		}
-		p.vpcID = aws.StringValue(instance.VpcId)
-	} else {
-		return nil, fmt.Errorf("No instance was found")
 	}
 
 	describeRequest := &ec2.DescribeSecurityGroupsInput{}
@@ -186,7 +165,7 @@ func (p *AWSProvider) Rules() ([]*inbound.InboundRules, error) {
 			for _, instance := range instances {
 				for _, isg := range instance.SecurityGroups {
 					if aws.StringValue(isg.GroupId) == aws.StringValue(sg.GroupId) {
-						providerID, ok := mapInstanceIdToProviderId[aws.StringValue(instance.InstanceId)]
+						providerID, ok := p.mapInstanceIdToProviderId[aws.StringValue(instance.InstanceId)]
 						if !ok {
 							return nil, fmt.Errorf("no ProviderID correspond to %s", aws.StringValue(instance.InstanceId))
 						}
@@ -228,6 +207,47 @@ func (p *AWSProvider) ApplyChanges(changes *plan.Changes) error {
 	}
 
 	return nil
+}
+
+func (p *AWSProvider) getInstances() ([]*ec2.Instance, error) {
+	nodes, err := p.kubeClient.CoreV1().Nodes().List(metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	instanceIds := make([]*string, 0, len(nodes.Items))
+	p.mapInstanceIdToProviderId = make(map[string]string, len(nodes.Items))
+	for _, node := range nodes.Items {
+		instanceId, err := mapToAWSInstanceID(node.Spec.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		instanceIds = append(instanceIds, aws.String(instanceId))
+		p.mapInstanceIdToProviderId[instanceId] = node.Spec.ProviderID
+	}
+
+	request := &ec2.DescribeInstancesInput{
+		InstanceIds: instanceIds,
+	}
+	instances, err := p.DescribeInstances(request)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(instances) > 0 {
+		instance := instances[0]
+		for _, tag := range instance.Tags {
+			if aws.StringValue(tag.Key) == "KubernetesCluster" {
+				p.clusterName = aws.StringValue(tag.Value)
+				break
+			}
+		}
+		p.vpcID = aws.StringValue(instance.VpcId)
+	} else {
+		return nil, fmt.Errorf("No instance was found")
+	}
+
+	return instances, nil
 }
 
 func (p *AWSProvider) findSecurityGroup(name string) (*ec2.SecurityGroup, error) {

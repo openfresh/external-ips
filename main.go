@@ -21,17 +21,14 @@ package main
 
 import (
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/openfresh/external-ips/controller"
 	"github.com/openfresh/external-ips/dns/plan"
@@ -95,7 +92,32 @@ func main() {
 		log.Fatal(err)
 	}
 
-	clusterName, err := getClusterName(cfg.Master, cfg.KubeConfig)
+	var fwp fwprovider.Provider
+	switch cfg.Provider {
+	case "aws":
+		fwp, err = fwprovider.NewAWSProvider(
+			fwprovider.AWSConfig{
+				AssumeRole: cfg.AWSAssumeRole,
+				DryRun:     cfg.DryRun,
+			},
+			kubeClient,
+		)
+	case "aws-sd":
+		fwp, err = fwprovider.NewAWSProvider(
+			fwprovider.AWSConfig{
+				AssumeRole: cfg.AWSAssumeRole,
+				DryRun:     cfg.DryRun,
+			},
+			kubeClient,
+		)
+	default:
+		log.Fatalf("unknown firewall provider: %s", cfg.Provider)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	clusterName, err := fwp.GetClusterName()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -114,7 +136,6 @@ func main() {
 	zoneTypeFilter := provider.NewZoneTypeFilter(cfg.AWSZoneType)
 
 	var p provider.Provider
-	var fwp fwprovider.Provider
 	switch cfg.Provider {
 	case "aws":
 		p, err = provider.NewAWSProvider(
@@ -127,13 +148,6 @@ func main() {
 				DryRun:         cfg.DryRun,
 			},
 		)
-		fwp, err = fwprovider.NewAWSProvider(
-			fwprovider.AWSConfig{
-				AssumeRole: cfg.AWSAssumeRole,
-				DryRun:     cfg.DryRun,
-			},
-			kubeClient,
-		)
 	case "aws-sd":
 		// Check that only compatible Registry is used with AWS-SD
 		if cfg.Registry != "noop" && cfg.Registry != "aws-sd" {
@@ -141,13 +155,6 @@ func main() {
 			cfg.Registry = "aws-sd"
 		}
 		p, err = provider.NewAWSSDProvider(domainFilter, cfg.AWSZoneType, cfg.DryRun)
-		fwp, err = fwprovider.NewAWSProvider(
-			fwprovider.AWSConfig{
-				AssumeRole: cfg.AWSAssumeRole,
-				DryRun:     cfg.DryRun,
-			},
-			kubeClient,
-		)
 	default:
 		log.Fatalf("unknown dns provider: %s", cfg.Provider)
 	}
@@ -228,30 +235,4 @@ func serveMetrics(address string) {
 	http.Handle("/metrics", promhttp.Handler())
 
 	log.Fatal(http.ListenAndServe(address, nil))
-}
-
-func getClusterName(kubeConfig, kubeMaster string) (string, error) {
-	if kubeConfig == "" {
-		if _, err := os.Stat(clientcmd.RecommendedHomeFile); err == nil {
-			kubeConfig = clientcmd.RecommendedHomeFile
-		}
-	}
-
-	config, err := clientcmd.BuildConfigFromFlags(kubeMaster, kubeConfig)
-	if err != nil {
-		return "", err
-	}
-
-	u, err := url.Parse(config.Host)
-	if err != nil {
-		return "", err
-	}
-
-	clusterName := u.Hostname()
-	parts := strings.Split(clusterName, ".")
-	if len(parts) > 2 {
-		clusterName = strings.Join(parts[1:], ".")
-	}
-
-	return clusterName, nil
 }
